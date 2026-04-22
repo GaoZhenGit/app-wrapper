@@ -23,6 +23,10 @@ struct ImportTableInfo {
 struct TLSInfo {
     bool exists;
     std::vector<DWORD> callbackRVAs; // TLS回调函数RVA列表
+    DWORD indexVariableRVA;          // TLS索引变量RVA（从文件解析）
+    DWORD rawDataStartRVA;           // TLS模板数据起始RVA（新增）
+    DWORD rawDataEndRVA;             // TLS模板数据结束RVA（新增）
+    DWORD sizeOfZeroFill;            // TLS零填充大小（新增）
 };
 
 // 异常处理信息
@@ -32,8 +36,22 @@ struct ExceptionInfo {
     DWORD size;
 };
 
+// Load Configuration信息
+struct LoadConfigInfo {
+    bool exists;
+    DWORD rva;
+    DWORD size;
+};
+
 // 重定位信息
 struct RelocationInfo {
+    bool exists;
+    DWORD rva;
+    DWORD size;
+};
+
+// 延迟导入信息
+struct DelayImportInfo {
     bool exists;
     DWORD rva;
     DWORD size;
@@ -53,6 +71,8 @@ struct PEMetadata {
     RelocationInfo relocation;
     TLSInfo tls;
     ExceptionInfo exception;
+    LoadConfigInfo loadConfig;
+    DelayImportInfo delayImport; // 新增
 };
 
 class PEParser {
@@ -67,4 +87,5 @@ private:
     static void ExtractDataDirectories(PBYTE pRawData, PEMetadata& metadata);
     static void ExtractTLS(PBYTE pRawData, DWORD rawSize, PEMetadata& metadata);
     static void ExtractException(PBYTE pRawData, PEMetadata& metadata);
+    static void ExtractLoadConfig(PBYTE pRawData, PEMetadata& metadata); // 新增
 };

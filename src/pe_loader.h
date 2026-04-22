@@ -13,7 +13,10 @@ private:
     static bool MapHeaders(LPVOID pBase, PBYTE pRawData, const PEMetadata& metadata);
     static bool MapSections(LPVOID pBase, PBYTE pRawData, const PEMetadata& metadata);
     static bool FixImports(LPVOID pBase, const PEMetadata& metadata);
+    static bool FixDelayImports(LPVOID pBase, const PEMetadata& metadata); // 新增
     static bool FixRelocations(LPVOID pBase, const PEMetadata& metadata);
+    static bool FixLoadConfig(LPVOID pBase, const PEMetadata& metadata);
+    static bool InitializeTLS(LPVOID pBase, const PEMetadata& metadata);
     static bool ExecuteTLSCallbacks(LPVOID pBase, const PEMetadata& metadata);
     static bool RegisterExceptionTable(LPVOID pBase, const PEMetadata& metadata);
 };

@@ -61,8 +61,13 @@ int main(int argc, char** argv) {
     // 4. 启用VT序列（可选）
     Executor::EnableVTSequence();
 
+    // 修改argv[0]为claude.exe路径（被加载程序期望）
+    // argv数组需要保持，但argv[0]改为claude.exe路径
+    char** modified_argv = argv;
+    modified_argv[0] = "claude.exe"; // 临时修改argv[0]
+
     // 5. 执行入口点（进入交互运行态）
-    if (!Executor::Execute(pBase, metadata.entryPointRVA)) {
+    if (!Executor::Execute(pBase, metadata.entryPointRVA, argc, modified_argv)) {
         LogError("入口点执行失败");
         LogClose();
         return 1;

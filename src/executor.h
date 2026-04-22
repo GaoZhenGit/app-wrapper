@@ -7,5 +7,5 @@ public:
     static bool EnableVTSequence();
 
     // 执行入口点（进入交互运行态）
-    static bool Execute(LPVOID pBase, DWORD entryPointRVA);
+    static bool Execute(LPVOID pBase, DWORD entryPointRVA, int argc, char** argv);
 };

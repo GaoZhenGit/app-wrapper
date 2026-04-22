@@ -66,6 +66,9 @@ PEMetadata PEParser::Parse(PBYTE pRawData, DWORD rawSize) {
     // 提取异常处理详情
     ExtractException(pRawData, metadata);
 
+    // 提取Load Configuration详情
+    ExtractLoadConfig(pRawData, metadata);
+
     return metadata;
 }
 
@@ -128,6 +131,24 @@ void PEParser::ExtractDataDirectories(PBYTE pRawData, PEMetadata& metadata) {
     metadata.exception.size = exceptionSize;
     LogInfo("异常处理表: 存在=%d, RVA=0x%X, Size=%d字节",
             metadata.exception.exists, exceptionRVA, exceptionSize);
+
+    // Load Configuration表 (索引10)
+    DWORD loadConfigRVA = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].VirtualAddress;
+    DWORD loadConfigSize = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].Size;
+    metadata.loadConfig.exists = (loadConfigRVA != 0);
+    metadata.loadConfig.rva = loadConfigRVA;
+    metadata.loadConfig.size = loadConfigSize;
+    LogInfo("Load Configuration表: 存在=%d, RVA=0x%X, Size=%d字节",
+            metadata.loadConfig.exists, loadConfigRVA, loadConfigSize);
+
+    // 延迟导入表 (索引13)
+    DWORD delayImportRVA = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress;
+    DWORD delayImportSize = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].Size;
+    metadata.delayImport.exists = (delayImportRVA != 0);
+    metadata.delayImport.rva = delayImportRVA;
+    metadata.delayImport.size = delayImportSize;
+    LogInfo("延迟导入表: 存在=%d, RVA=0x%X, Size=%d字节",
+            metadata.delayImport.exists, delayImportRVA, delayImportSize);
 }
 
 void PEParser::ExtractTLS(PBYTE pRawData, DWORD rawSize, PEMetadata& metadata) {
@@ -137,7 +158,55 @@ void PEParser::ExtractTLS(PBYTE pRawData, DWORD rawSize, PEMetadata& metadata) {
     PIMAGE_NT_HEADERS64 pNt = (PIMAGE_NT_HEADERS64)(pRawData + pDos->e_lfanew);
 
     DWORD tlsRVA = pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress;
-    PIMAGE_TLS_DIRECTORY64 pTls = (PIMAGE_TLS_DIRECTORY64)(pRawData + tlsRVA);
+
+    // 将TLS目录RVA转换为文件偏移
+    DWORD tlsFileOffset = 0;
+    PIMAGE_SECTION_HEADER pSec = IMAGE_FIRST_SECTION(pNt);
+    for (WORD i = 0; i < metadata.numberOfSections; i++) {
+        DWORD secStart = pSec[i].VirtualAddress;
+        DWORD secEnd = secStart + pSec[i].SizeOfRawData;
+        if (tlsRVA >= secStart && tlsRVA < secEnd) {
+            tlsFileOffset = tlsRVA - secStart + pSec[i].PointerToRawData;
+            break;
+        }
+    }
+
+    if (tlsFileOffset == 0) {
+        LogError("TLS目录RVA无法转换为文件偏移: RVA=0x%X", tlsRVA);
+        return;
+    }
+
+    PIMAGE_TLS_DIRECTORY64 pTls = (PIMAGE_TLS_DIRECTORY64)(pRawData + tlsFileOffset);
+
+    // 提取TLS模板数据字段（从文件数据，转换为RVA）
+    ULONGLONG rawDataStartVA = pTls->StartAddressOfRawData;
+    ULONGLONG rawDataEndVA = pTls->EndAddressOfRawData;
+
+    if (rawDataStartVA >= pNt->OptionalHeader.ImageBase) {
+        metadata.tls.rawDataStartRVA = (DWORD)(rawDataStartVA - pNt->OptionalHeader.ImageBase);
+    } else {
+        metadata.tls.rawDataStartRVA = (DWORD)rawDataStartVA;
+    }
+
+    if (rawDataEndVA >= pNt->OptionalHeader.ImageBase) {
+        metadata.tls.rawDataEndRVA = (DWORD)(rawDataEndVA - pNt->OptionalHeader.ImageBase);
+    } else {
+        metadata.tls.rawDataEndRVA = (DWORD)rawDataEndVA;
+    }
+
+    metadata.tls.sizeOfZeroFill = (DWORD)pTls->SizeOfZeroFill;
+
+    // 提取TLS索引变量RVA
+    ULONGLONG indexVA = pTls->AddressOfIndex;
+    if (indexVA >= pNt->OptionalHeader.ImageBase) {
+        metadata.tls.indexVariableRVA = (DWORD)(indexVA - pNt->OptionalHeader.ImageBase);
+    } else {
+        metadata.tls.indexVariableRVA = (DWORD)indexVA;
+    }
+
+    LogInfo("TLS目录: StartRVA=0x%X, EndRVA=0x%X, IndexRVA=0x%X, ZeroFill=%d",
+            metadata.tls.rawDataStartRVA, metadata.tls.rawDataEndRVA,
+            metadata.tls.indexVariableRVA, metadata.tls.sizeOfZeroFill);
 
     // 提取回调函数数组（AddressOfCallBacks是VA，需要转换为文件偏移）
     ULONGLONG callbackArrayVA = pTls->AddressOfCallBacks;
@@ -164,9 +233,36 @@ void PEParser::ExtractTLS(PBYTE pRawData, DWORD rawSize, PEMetadata& metadata) {
         return;
     }
 
-    PULONGLONG pCallbacks = (PULONGLONG)(pRawData + callbackArrayRVA);
+    // 将回调数组RVA转换为文件偏移
+    DWORD callbackArrayFileOffset = 0;
+    for (WORD i = 0; i < metadata.numberOfSections; i++) {
+        DWORD secStart = pSec[i].VirtualAddress;
+        DWORD secEnd = secStart + pSec[i].SizeOfRawData;
+        if (callbackArrayRVA >= secStart && callbackArrayRVA < secEnd) {
+            callbackArrayFileOffset = (DWORD)(callbackArrayRVA - secStart + pSec[i].PointerToRawData);
+            break;
+        }
+    }
 
-    LogInfo("TLS目录: CallbackArrayVA=0x%llX, CallbackArrayRVA=0x%llX", callbackArrayVA, callbackArrayRVA);
+    if (callbackArrayFileOffset == 0) {
+        LogError("TLS回调数组RVA无法转换为文件偏移: RVA=0x%llX", callbackArrayRVA);
+        return;
+    }
+
+    PULONGLONG pCallbacks = (PULONGLONG)(pRawData + callbackArrayFileOffset);
+
+    LogInfo("TLS目录: CallbackArrayVA=0x%llX, CallbackArrayFileOffset=0x%X", callbackArrayVA, callbackArrayFileOffset);
+
+    // 首先检查第一个回调值是否有效
+    if (pCallbacks[0] != 0) {
+        ULONGLONG firstCallbackVA = pCallbacks[0];
+        // 有效的回调VA应该在ImageBase到ImageBase+SizeOfImage范围内
+        ULONGLONG imageEndVA = pNt->OptionalHeader.ImageBase + pNt->OptionalHeader.SizeOfImage;
+        if (firstCallbackVA < pNt->OptionalHeader.ImageBase || firstCallbackVA >= imageEndVA) {
+            LogInfo("TLS回调数组第一个值无效（不在映像范围内），跳过回调执行: VA=0x%llX", firstCallbackVA);
+            return;
+        }
+    }
 
     // 遍历回调数组（以NULL结尾）
     int callbackCount = 0;
@@ -198,4 +294,20 @@ void PEParser::ExtractException(PBYTE pRawData, PEMetadata& metadata) {
     LogInfo("异常处理函数数量: %d", entryCount);
 
     // 实际的函数表内容在PELoader阶段使用，这里只记录存在性
+}
+
+void PEParser::ExtractLoadConfig(PBYTE pRawData, PEMetadata& metadata) {
+    if (!metadata.loadConfig.exists) return;
+
+    PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)pRawData;
+    PIMAGE_NT_HEADERS64 pNt = (PIMAGE_NT_HEADERS64)(pRawData + pDos->e_lfanew);
+
+    PIMAGE_LOAD_CONFIG_DIRECTORY64 pLoadConfig = (PIMAGE_LOAD_CONFIG_DIRECTORY64)(pRawData + metadata.loadConfig.rva);
+
+    // SecurityCookie字段在结构体中，需要重定位
+    LogInfo("Load Configuration: Size=%d, SecurityCookie=0x%llX",
+            pLoadConfig->Size, pLoadConfig->SecurityCookie);
+
+    // 注意：SecurityCookie字段需要重定位
+    // 这些字段在PELoader阶段处理
 }
