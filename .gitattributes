@@ -1,3 +1,6 @@
-samples/*.bin filter=lfs diff=lfs merge=lfs -text
 *.bin filter=lfs diff=lfs merge=lfs -text
+*.*.bin filter=lfs diff=lfs merge=lfs -text
+samples/claude.v2.1.116.bin filter=lfs diff=lfs merge=lfs -text
+samples/claude.v2.1.117.bin filter=lfs diff=lfs merge=lfs -text
+samples/*.bin filter=lfs diff=lfs merge=lfs -text
 *.exe filter=lfs diff=lfs merge=lfs -text
