@@ -1,4 +1,21 @@
-docs
-__pycache__
-build
-logs
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Build output
+*.exe
+cli_fixed*.js
+app.exe
+
+# Extracted/rebuilt files
+samples/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

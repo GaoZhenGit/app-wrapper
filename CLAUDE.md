@@ -1,138 +1,59 @@
-# 项目说明
+# Bun Wrap Tools
 
 ## 项目目标
 
-**核心目标**：实现C++壳程序（wrapper.exe），通过进程内PE加载器将claude.exe加载到内存中直接执行，规避企业级EDR检测系统（奇安信天擎、亚信等），确保claude.exe交互式命令行功能完整可用。
+从 Bun 打包的可执行文件中提取 JavaScript 源码，并重新打包为可运行的可执行文件。
 
-## Git提交控制
+## 核心成果
 
-**禁止Claude自动提交git** - 用户会手动操作所有git commit。
+已成功实现目标：
+1. 使用官方 StandaloneModuleGraph.zig 结构从 Bun exe 提取 JS
+2. 修复 CommonJS wrapper 调用，传入正确参数
+3. 使用 `bun build --compile` 重新打包
 
-在执行任何涉及git的操作时：
-- 只完成文件写入/编辑工作
-- 不调用git add、git commit等命令
-- 即使流程规范要求"提交到git"，也跳过git步骤，仅完成文档编写
+## 项目结构
 
-## 核心约束（必须遵守）
+```
+bun-wrap-tools/
+├── tools/           # Python 工具
+│   ├── bun_extractor.py    # 从 Bun exe 提取 JS
+│   └── bun_wrapper_fix.py  # 修复并重打包 JS
+├── samples/         # 示例可执行文件和提取的文件
+└── docs/            # 文档
+```
 
-### 1. 进程内执行（禁止子进程）
-- **绝对要求**：不能创建子进程运行claude.exe
-- 必须在当前wrapper.exe进程空间内加载并执行claude.exe代码
-- 使用VirtualAlloc在当前进程分配内存，直接调用入口点
-- 规避EDR检测依赖于单进程特性
+## 核心文件
 
-### 2. 单进程保证
-- 任务管理器中只能显示wrapper.exe一个进程
-- 不能使用CreateProcess、subprocess等子进程创建方式
-- 所有代码执行在wrapper.exe进程内
+- `tools/bun_extractor.py` - 使用 PE 解析 + Bun 结构提取 JS
+- `tools/bun_wrapper_fix.py` - 修复 wrapper + 添加模块 polyfill
+- `samples/claude.v2.1.117.bin` - 示例 Bun exe (247MB)
+- `samples/build/` - 提取的 JS 文件
 
-### 3. 交互式命令行完整支持
-- claude.exe是交互式命令行程序，接受启动参数并支持运行态交互
-- 必须支持实时stdin/stdout交互：
-  - 用户输入立即传递给claude.exe
-  - claude.exe输出立即显示（包括ANSI控制码、颜色、光标操作等）
-- 支持claude.exe的所有参数和交互模式
-- 保持控制台IO天然共享（无需重定向或管道）
+## 使用方法
 
-### 4. 规避检测目标
-- 目标环境：奇安信天擎、亚信等企业级EDR系统
-- 现状：直接运行claude.exe（改名改路径）均显示"拒绝访问"
-- Python subprocess同样被拦截
-- wrapper.exe必须在目标机器上正常运行不被拦截
+```bash
+# 提取
+python tools/bun_extractor.py samples/claude.v2.1.117.bin samples/build/
 
-## 技术要求
+# 修复
+python tools/bun_wrapper_fix.py samples/build/root/src/entrypoints/cli.js cli_fixed.js
 
-### 1. 目标程序特性
-- 文件：claude.exe（通过DIE检查确认为Rust编译的64位程序）
-- PE结构：PE32+格式，包含TLS、异常处理表(.pdata)、导入表、重定位表等
+# 打包
+bun build cli_fixed.js --compile --target=bun-windows-x64-modern --bytecode --outfile app.exe
+```
 
-### 2. PE加载器关键技术
-- **PE结构解析**：完整解析DOS头、NT头、节区、数据目录
-- **内存映射**：VirtualAlloc分配内存，按VirtualAddress映射节区
-- **导入表修复**：加载依赖DLL，解析函数地址写入IAT
-- **重定位修复**：修正64位地址偏移（基址可能不匹配）
-- **TLS回调执行**：在入口点前执行所有TLS回调（Rust程序关键）
-- **异常处理表注册**：注册.pdata节的异常处理函数（Rust panic机制）
-- **参数传递**：CRT Startup入口点通过C运行时机制传递argc/argv（不通过函数参数）
+## 技术细节
 
-### 3. 控制台交互技术
-- 启用VT序列支持（ENABLE_VIRTUAL_TERMINAL_PROCESSING）支持ANSI控制码
-- 被加载代码天然使用壳进程stdin/stdout/stderr（无需特殊处理）
-- 控制台API（SetConsoleTextAttribute等）天然兼容
+### Bun 结构检测
+- Trailer: `\n---- Bun! ----\n`
+- Offsets: 32字节结构，包含 byte_count、modules_ptr 等
+- 模块表: 260字节 (7个模块 × 36字节)
 
-### 4. 日志与调试系统
-- **日志文件**：每次运行生成独立日志文件（logs/wrapper_YYYYMMDD_HHMMSS.log）
-- **日志内容**：
-  - 时间戳 + 级别 + 详细内容
-  - INFO级别：仅写文件（不干扰交互）
-  - ERROR级别：文件 + 控制台（用户可见）
-- **关键步骤日志**：PE解析、内存分配、节区映射、导入表修复、重定位、TLS回调、异常处理表、入口点调用
-- **错误详情**：失败时输出具体原因和位置（如"无法加载DLL xxx"、"无法找到函数xxx")
-- **异常捕获**：SEH包裹关键操作，记录崩溃地址和异常代码
+### Wrapper 修复
+- 通过正则自动检测函数名: `([A-Z][A-Z0-9_]{1,6})\(\);\}\)`
+- 不同 Bun 版本有不同的函数名 (E_9, K4A 等)
+- 注入正确的 5 个参数: exports, require, module, __filename, __dirname
 
-### 5. 开发环境配置
-- 操作系统：Windows
-- 构建工具：CMake
-- 构建参数：必须使用 `-G "MinGW Makefiles"`
-- Shell环境：PowerShell（不使用Linux/Unix命令）
-- 编译器：MinGW GCC（64位）
+## 不自动提交 Git
 
-## 测试与验证流程
-
-### 1. 本地开发环境测试
-- 本机无杀软限制，先在开发环境验证壳程序功能
-- 分阶段测试：PE解析 → 内存映射 → 导入表 → 重定位 → TLS → 异常处理 → 入口点 → 参数传递
-- 每阶段通过日志验证正确性
-
-### 2. 功能测试标准
-- 基础命令行：`wrapper.exe --version`输出claude版本信息
-- 参数传递：`wrapper.exe config set key value`参数正确传递
-- 交互模式：进入claude交互界面，stdin实时输入，stdout实时输出
-- ANSI控制码：颜色、光标移动、清屏等正常显示
-- 单进程验证：任务管理器确认仅wrapper.exe一个进程
-
-### 3. 目标环境验证
-- 迁移到目标机器（奇安信天擎/亚信EDR环境）
-- 运行wrapper.exe不被拦截（显示"拒绝访问"视为失败）
-- 功能完整可用，交互稳定
-
-## 当前状态与问题
-
-### 已有实现
-- 基础PE加载器代码已存在（main.cpp、CMakeLists.txt、resource.rc）
-- 已将claude.exe嵌入资源（resource.rc引用）
-
-### 现存问题
-- 本地测试：运行wrapper.exe --version无输出、无日志、立即停止
-- 原因待查：可能是PE加载步骤错误、参数传递问题、TLS未处理等
-- 需要系统化重构实现，按设计文档分步验证
-
-### 实现策略
-- 采用系统化重构方案（方案3）：
-  - 构建分步骤调试框架
-  - 补充Rust特有机制（TLS、异常处理）
-  - 正确传递参数、环境变量、工作目录
-  - 基本错误提示机制
-  - 完整日志系统
-
-## 开发注意事项
-
-### 1. 无源码约束
-- claude.exe为第三方程序，无源码访问权限
-- 所有PE结构信息通过动态解析二进制获得
-- 如果PE解析发现其他数据目录有数据，可扩展处理逻辑
-
-### 2. 分阶段验证
-- 不一次性完成所有代码，按阶段测试验证
-- 每阶段查看日志文件确认正确性
-- 失败时通过日志定位问题，逐步修正
-
-### 3. 调试优先级
-- 先保证PE解析正确（查看日志输出的结构信息）
-- 再保证内存映射成功（查看内存地址、节区数量）
-- 再保证导入表修复（查看DLL加载、函数解析）
-- 最后验证入口点调用和交互功能
-
-### 4. 参数传递备选方案
-- 方案1（优先）：假设Rust程序从GetCommandLineA()解析参数，无需特殊处理
-- 方案2（备选）：如果测试发现参数异常，实现Hook方案（修改导入表，实现__p___argc/__p___argv函数）
+用户手动操作所有 git 提交。
