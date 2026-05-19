@@ -15,7 +15,7 @@ def find_wrapper_function(content):
     """Auto-detect Bun wrapper function name"""
     content = content.rstrip()
     # Find the last pattern: FUNC_NAME();})
-    pattern = r'([A-Z][A-Z0-9_]{1,6})\(\);\}\)'
+    pattern = r'([A-Za-z]\w{0,10})\(\);\}\)'
     matches = list(re.finditer(pattern, content))
     if not matches:
         return None, content
