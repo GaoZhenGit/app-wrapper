@@ -3,12 +3,14 @@
 Bun JS Wrapper Fix Tool
 
 Usage:
-    python bun_wrapper_fix.py <input.js> [output.js]
+    python bun_wrapper_fix.py <input.js> [output.js] [native_dir]
 """
 
 import re
 import sys
 import json
+import os
+import shutil
 
 
 def find_wrapper_function(content):
@@ -69,7 +71,7 @@ def process_js_file(input_path, output_path=None):
 
     print("Found wrapper: " + func_name)
 
-    # Remove trailing newline and wrapper call
+    # Remove trailing wrapper call: FUNC_NAME();})
     content = content.rstrip()
     wrapper_end = func_name + "();})"
     if content.endswith(wrapper_end):
@@ -77,17 +79,14 @@ def process_js_file(input_path, output_path=None):
     else:
         print("Warning: File does not end with expected wrapper pattern")
 
-    # Generate polyfill
+    # Generate polyfill and wrapper call
     polyfill = generate_polyfill()
-
-    # The original code ends with "})" (end of IIFE) but we removed "K4A();})"
-    # So we need to add "K4A();" back before our "})(...)"
-    # Original ends: ...})
-    # We removed: K4A();})
-    # So we need: K4A();})(mod.exports, ...)
     wrapper_call = func_name + '();})(mod.exports, mod.require, mod, "cli.js", ".")'
 
-    # Escape the content as a JS string literal using JSON
+    # eval is required: the extracted code is a post-bundling artifact that
+    # uses internal module system (n() registry) for bundled deps like React.
+    # bun build --compile would try to resolve all require() calls at build
+    # time, but those modules only exist inside the n() registry at runtime.
     js_string = json.dumps(content)
 
     lines = [
@@ -99,7 +98,6 @@ def process_js_file(input_path, output_path=None):
         'global.__filename = "cli.js";',
         'global.__dirname = ".";',
         '',
-        '// Execute with modified wrapper call',
         'const wrappedCode = ' + js_string + ' + ' + repr(wrapper_call) + ';',
         'eval(wrappedCode);',
     ]
@@ -138,6 +136,8 @@ def main():
         sys.exit(1)
     except Exception as e:
         print("Error: " + str(e))
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 

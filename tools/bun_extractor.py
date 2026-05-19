@@ -230,6 +230,71 @@ def clean_module_path(filename):
 
     return clean
 
+def extract_native_modules(blob_data, output_dir):
+    """扫描blob中的PE/DLL文件(.node原生模块)并提取"""
+    extracted = 0
+
+    idx = 0
+    while True:
+        pos = blob_data.find(b'MZ', idx)
+        if pos == -1:
+            break
+
+        idx = pos + 2
+
+        # 验证PE签名
+        if pos + 64 >= len(blob_data):
+            continue
+        pe_offset = struct.unpack('<I', blob_data[pos+60:pos+64])[0]
+        if pe_offset >= 1024 or pos + pe_offset + 4 >= len(blob_data):
+            continue
+        nt_pos = pos + pe_offset
+        if blob_data[nt_pos:nt_pos+4] != b'PE\x00\x00':
+            continue
+
+        # 确定PE文件大小（从最后一个section的末尾计算）
+        num_sec = struct.unpack('<H', blob_data[nt_pos+6:nt_pos+8])[0]
+        opt_hdr = struct.unpack('<H', blob_data[nt_pos+20:nt_pos+22])[0]
+        sec_table = nt_pos + 24 + opt_hdr
+        pe_end = pos
+        for i in range(num_sec):
+            s = sec_table + i * 40
+            if s + 40 > len(blob_data):
+                break
+            raw_off = struct.unpack('<I', blob_data[s+20:s+24])[0]
+            raw_sz = struct.unpack('<I', blob_data[s+16:s+20])[0]
+            if pos + raw_off + raw_sz > pe_end:
+                pe_end = pos + raw_off + raw_sz
+        pe_size = pe_end - pos
+
+        # 从PE数据前面的字节查找模块名 (B:/~BUN/root/xxx.node)
+        name = None
+        search_start = max(0, pos - 200)
+        preceding = blob_data[search_start:pos]
+        # 查找 .node 路径模式
+        import re
+        match = re.search(rb'B:/~BUN/root/([a-zA-Z0-9_\-\.]+\.node)\x00', preceding)
+        if not match:
+            match = re.search(rb'([a-zA-Z0-9_\-\.]+\.node)\x00', preceding)
+        if match:
+            name = match.group(1).decode('ascii')
+        else:
+            name = f"native_module_{pos:x}.node"
+
+        # 提取文件
+        clean_name = clean_module_path(name)
+        save_path = output_dir / clean_name
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(save_path, 'wb') as f:
+            f.write(blob_data[pos:pe_end])
+
+        print(f"  [native] {name:50s} offset={pos:#x} size={pe_size/1024:.1f}KB -> {clean_name}")
+        extracted += 1
+
+    return extracted
+
+
 def extract_bun_exe(exe_path, output_dir=None):
     """主提取流程"""
     exe_path = Path(exe_path).resolve()
@@ -363,6 +428,10 @@ def extract_bun_exe(exe_path, output_dir=None):
             f.write(argv_data)
         print(f"\n[OK] 编译参数: {argv_data.decode('utf-8', errors='replace')}")
 
+    # 提取native .node 模块 (PE/DLL inside blob)
+    print(f"\n[步骤6] 提取native .node模块...")
+    native_count = extract_native_modules(blob_data, output_dir)
+
     # 生成报告
     report = f"""Bun打包exe提取报告
 {'='*70}
@@ -381,7 +450,8 @@ def extract_bun_exe(exe_path, output_dir=None):
 
 模块提取信息:
 - 模块总数: {len(modules)}
-- 成功提取: {extracted_count}
+- JS模块: {extracted_count}
+- Native模块: {native_count}
 - 入口点: {entry_point_name or '未指定'}
 
 提取方法:
@@ -402,7 +472,7 @@ def extract_bun_exe(exe_path, output_dir=None):
         f.write(report)
 
     print("\n" + "="*70)
-    print(f"[OK] 提取完成！共提取{extracted_count}个模块")
+    print(f"[OK] 提取完成！共提取{extracted_count}个JS模块 + {native_count}个native模块")
     print("="*70)
     print(f"\n输出目录: {output_dir}")
     print(f"入口文件: {entry_point_name or '未指定'}")
